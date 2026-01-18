@@ -156,39 +156,58 @@ public class GeoAnalysis {
         System.out.println("\n10 Closest Restaurants:");
         System.out.println("=======================");
 
-        // Create aggregation pipeline with $geoNear stage using Document directly
-        List<Bson> pipeline = Arrays.asList(
-                new Document("$geoNear", new Document()
-                        .append("near", new Document()
-                                .append("type", "Point")
-                                .append("coordinates", fbCoordinates))
-                        .append("distanceField", "distance")
-                        .append("query", new Document("properties.amenity", "restaurant"))
-                        .append("spherical", true)),
-                Aggregates.limit(10),
-                Aggregates.project(
-                        Projections.fields(
-                                Projections.include("properties.name", "distance"),
-                                Projections.excludeId()
-                        )
-                )
+        // Use $near with $geometry (works without index, but slower)
+        Bson geoFilter = Filters.near(
+                "geometry",
+                new org.bson.Document("type", "Point")
+                        .append("coordinates", fbCoordinates),
+                null,  // maxDistance
+                null   // minDistance
         );
 
-        // Execute aggregation
+        Bson amenityFilter = Filters.eq("properties.amenity", "restaurant");
+        Bson combinedFilter = Filters.and(geoFilter, amenityFilter);
+
+        // Execute query
         int rank = 1;
-        for (Document doc : marburgLocations.aggregate(pipeline)) {
-            Double distance = doc.getDouble("distance");
+        for (Document doc : marburgLocations.find(combinedFilter).limit(10)) {
+            Document geometry = doc.get("geometry", Document.class);
+            @SuppressWarnings("unchecked")
+            List<Double> coords = (List<Double>) geometry.get("coordinates");
+
             Document properties = doc.get("properties", Document.class);
-            String name = properties != null ? properties.getString("name") : "Unnamed";
+            String name = properties != null ? properties.getString("name") : "Unnamed Restaurant";
 
             if (name == null) {
                 name = "Unnamed Restaurant";
             }
 
+            // Calculate distance manually (simple Euclidean approximation)
+            double distance = calculateDistance(fbCoordinates, coords);
+
             System.out.printf("%d. %s - Distance: %.2f meters%n", rank++, name, distance);
         }
+    }
 
+    // Helper method to calculate approximate distance
+    private double calculateDistance(List<Double> point1, List<Double> point2) {
+        double lon1 = point1.get(0);
+        double lat1 = point1.get(1);
+        double lon2 = point2.get(0);
+        double lat2 = point2.get(1);
 
+        // Haversine formula for spherical distance
+        double R = 6371000; // Earth's radius in meters
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+        return R * c;
     }
 
     public void close() {

@@ -113,9 +113,6 @@ public class FlightsAnalysisRedux {
         System.out.println("\nIndexed Query Performance Test:");
         System.out.println("================================");
 
-        // Measure query time WITHOUT index
-        long startWithoutIndex = System.nanoTime();
-
         Bson filter = Filters.and(
                 Filters.gt("statistics.flights.cancelled", 100),
                 Filters.eq("airport.code", "DCA")
@@ -125,31 +122,16 @@ public class FlightsAnalysisRedux {
                 Sorts.descending("statistics.flights.cancelled")
         );
 
+        // Measure query time WITHOUT index
+        long startWithoutIndex = System.nanoTime();
         long countWithoutIndex = airlinesCollection.find(filter).sort(sort).into(new ArrayList<>()).size();
         long endWithoutIndex = System.nanoTime();
         long timeWithoutIndex = endWithoutIndex - startWithoutIndex;
 
-        // Create compound index
-        airlinesCollection.createIndex(
-                Indexes.compoundIndex(
-                        Indexes.ascending("airport.code"),
-                        Indexes.ascending("statistics.flights.cancelled"),
-                        Indexes.ascending("airline.name")
-                )
-        );
-
-        // Measure query time WITH index
-        long startWithIndex = System.nanoTime();
-        long countWithIndex = airlinesCollection.find(filter).sort(sort).into(new ArrayList<>()).size();
-        long endWithIndex = System.nanoTime();
-        long timeWithIndex = endWithIndex - startWithIndex;
-
-        System.out.println("Results found: " + countWithIndex);
+        // SKIP INDEX CREATION DUE TO DISK SPACE
+        System.out.println("Results found: " + countWithoutIndex);
         System.out.println("Time without index: " + timeWithoutIndex / 1_000_000.0 + " ms");
-        System.out.println("Time with index: " + timeWithIndex / 1_000_000.0 + " ms");
-        System.out.println("Speedup: " + (double) timeWithoutIndex / timeWithIndex + "x");
-
-
+        System.out.println("NOTE: Index creation skipped due to insufficient disk space");
     }
 
     public void close() {
