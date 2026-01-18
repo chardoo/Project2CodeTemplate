@@ -19,6 +19,9 @@ public class GBifPreProcessing {
                 .master("local[*]")
                 .config("spark.serializer", KryoSerializer.class.getName())
                 .config("spark.kryo.registrator", "org.apache.sedona.core.serde.SedonaKryoRegistrator")
+                // Fix for macOS network binding issues
+                .config("spark.driver.host", "localhost")
+                .config("spark.driver.bindAddress", "127.0.0.1")
                 // MongoDB Connector 10.x configuration
                 .config("spark.mongodb.read.connection.uri", "mongodb://localhost:27017")
                 .config("spark.mongodb.read.database", "biodiv")
@@ -169,14 +172,32 @@ public class GBifPreProcessing {
         SparkSession spark = preprocessing.getSedonaMongoSession();
 
         try {
-            // Task b: Read GBIF data
-            Dataset<Row> gbifData = preprocessing.readGbif(spark, "resources/flora_germany.geojson");
+            // Task b: Read GBIF data - try different paths
+            String gbifPath = findFile(new String[]{
+                    "flora_germany.geojson",
+                    "resources/flora_germany.geojson",
+                    "src/main/resources/flora_germany.geojson"
+            });
+
+            String communitiesPath = findFile(new String[]{
+                    "communities.shp",
+                    "resources/communities.shp",
+                    "src/main/resources/communities.shp",
+                    "src/main/resources/communities/communities.shp"
+            });
+
+            if (gbifPath == null || communitiesPath == null) {
+                System.err.println("Could not find required files!");
+                return;
+            }
+
+            Dataset<Row> gbifData = preprocessing.readGbif(spark, gbifPath);
             System.out.println("GBIF data schema:");
             gbifData.printSchema();
             System.out.println("GBIF records: " + gbifData.count());
 
             // Task c: Read communities
-            Dataset<Row> communities = preprocessing.readCommunities(spark, "resources/communities.shp");
+            Dataset<Row> communities = preprocessing.readCommunities(spark, communitiesPath);
             System.out.println("\nCommunities schema:");
             communities.printSchema();
             System.out.println("Communities count: " + communities.count());
@@ -196,5 +217,21 @@ public class GBifPreProcessing {
         } finally {
             spark.stop();
         }
+    }
+
+    // Helper method to find file in multiple locations
+    private static String findFile(String[] possiblePaths) {
+        for (String path : possiblePaths) {
+            java.io.File file = new java.io.File(path);
+            if (file.exists()) {
+                System.out.println("Found file at: " + path);
+                return path;
+            }
+        }
+        System.err.println("Could not find file. Tried:");
+        for (String path : possiblePaths) {
+            System.err.println("  - " + path);
+        }
+        return null;
     }
 }

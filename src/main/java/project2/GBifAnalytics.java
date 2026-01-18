@@ -11,6 +11,7 @@ import java.util.*;
 
 import static com.mongodb.client.model.Aggregates.*;
 import static com.mongodb.client.model.Accumulators.*;
+import static com.mongodb.client.model.Sorts.*;
 
 public class GBifAnalytics {
 
@@ -29,33 +30,53 @@ public class GBifAnalytics {
         System.out.println("Top 10 Most Diverse Communities:");
         System.out.println("=================================");
 
-        // Create aggregation pipeline
-        List<Document> pipeline = Arrays.asList(
+        // Create aggregation pipeline using Bson instead of Document
+        List<Bson> pipeline = Arrays.asList(
                 // Group by community name and collect unique species
-                // Count the number of unique species
-                // Sort by number of species descending
-                // Limit to top 10
-                new Document[]{new Document("$group", new Document()
-                        .append("_id", "$GEN")  // Assuming GEN is community name field
-                        .append("speciesCount", new Document("$addToSet", "$species"))
-                ), new Document("$project", new Document()
+                group("$GEN", addToSet("speciesCount", "$species")),
+                // Add field to count the number of unique species
+                new Document("$addFields", new Document("numSpecies", new Document("$size", "$speciesCount"))),
+                // Project only the fields we need
+                new Document("$project", new Document()
                         .append("communityName", "$_id")
-                        .append("numSpecies", new Document("$size", "$speciesCount"))
-                        .append("_id", Optional.of(0))
-                ), new Document("$sort", new Document("numSpecies", Optional.of(-1))), new Document("$limit", Optional.of(10))});
+                        .append("numSpecies", 1)
+                        .append("_id", 0)
+                ),
+                // Sort by number of species descending
+                sort(descending("numSpecies")),
+                // Limit to top 10
+                limit(10)
+        );
 
         // Execute aggregation
         int rank = 1;
-
-
         for (Document doc : gbifCollection.aggregate(pipeline)) {
-            System.out.println(1);
-//            String communityName = doc.getString("communityName");
-//            Integer numSpecies = doc.getInteger("numSpecies");
-//            System.out.printf("%d. %s: %d species%n", rank++, communityName, numSpecies);
+            String communityName = doc.getString("communityName");
+            Integer numSpecies = doc.getInteger("numSpecies");
+            System.out.printf("%d. %s: %d species%n", rank++, communityName, numSpecies);
         }
 
-
+        /*
+         * MongoDB Shell (JavaScript) query:
+         *
+         * db.gbif.aggregate([
+         *   {
+         *     $group: {
+         *       _id: "$GEN",
+         *       speciesCount: { $addToSet: "$species" }
+         *     }
+         *   },
+         *   {
+         *     $project: {
+         *       communityName: "$_id",
+         *       numSpecies: { $size: "$speciesCount" },
+         *       _id: 0
+         *     }
+         *   },
+         *   { $sort: { numSpecies: -1 } },
+         *   { $limit: 10 }
+         * ])
+         */
     }
 
     // Task 2.2.g: Find most similar communities using Jaccard Similarity
@@ -65,10 +86,15 @@ public class GBifAnalytics {
 
         // Set up Spark session with MongoDB access
         SparkSession spark = SparkSession.builder()
-                .appName("GBif Analytics")
-                .master("local[*]")
-                .config("spark.mongodb.read.connection.uri", "mongodb://localhost:27017/biodiv.gbif")
-                .config("spark.mongodb.write.connection.uri", "mongodb://localhost:27017/biodiv.gbif")
+                .master("local")
+                .appName("MongoSparkConnectorIntro")
+//                .config("spark.driver.host", "127.0.0.1")
+                .config("spark.driver.bindAddress", "127.0.0.1")
+                .config("spark.driver.port", "0")  // Let Spark pick a random port
+                .config("spark.ui.enabled", "false")  // Disable Spark UI to avoid port conflicts
+                .config("spark.network.timeout", "800s")
+                .config("spark.mongodb.read.connection.uri", "mongodb://localhost:27017")
+                .config("spark.mongodb.write.connection.uri", "mongodb://localhost:27017")
                 .getOrCreate();
 
         // Create aggregation pipeline to get top 10 communities and their species
@@ -78,7 +104,7 @@ public class GBifAnalytics {
                 "{ $sort: { numSpecies: -1 } }," +
                 "{ $limit: 10 }" +
                 "]";
-
+        System.out.println("aggregationPipeline");
         // Read from MongoDB with aggregation pipeline using MongoDB Connector 10.x syntax
         Dataset<Row> communities = spark.read()
                 .format("mongodb")
@@ -118,8 +144,8 @@ public class GBifAnalytics {
 
         for (int i = 0; i < Math.min(10, similarities.size()); i++) {
             CommunityPair pair = similarities.get(i);
-//            System.out.printf("%d. %s <-> %s: %.4f%n",
-//                    i + 1, pair.community1, pair.community2, pair.similarity);
+            System.out.printf("%d. %s <-> %s: %.4f%n",
+                    i + 1, pair.community1, pair.community2, pair.similarity);
         }
 
         spark.stop();

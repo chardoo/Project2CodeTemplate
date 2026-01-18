@@ -188,31 +188,7 @@ public class GeoAnalysis {
             System.out.printf("%d. %s - Distance: %.2f meters%n", rank++, name, distance);
         }
 
-        /*
-         * MongoDB Shell (JavaScript) query:
-         *
-         * db.marburgLocations.aggregate([
-         *   {
-         *     $geoNear: {
-         *       near: {
-         *         type: "Point",
-         *         coordinates: [8.7742, 50.8108] // FB coordinates
-         *       },
-         *       distanceField: "distance",
-         *       query: { "properties.amenity": "restaurant" },
-         *       spherical: true
-         *     }
-         *   },
-         *   { $limit: 10 },
-         *   {
-         *     $project: {
-         *       "properties.name": 1,
-         *       "distance": 1,
-         *       "_id": 0
-         *     }
-         *   }
-         * ])
-         */
+
     }
 
     public void close() {
