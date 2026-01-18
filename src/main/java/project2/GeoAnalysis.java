@@ -41,7 +41,6 @@ public class GeoAnalysis {
             for (String path : possiblePaths) {
                 try {
                     content = new String(Files.readAllBytes(Paths.get(path)));
-//                    System.out.println("Reading from: " + content);
                     System.out.println("Reading from: " + path);
                     break;
                 } catch (IOException e) {
@@ -114,9 +113,19 @@ public class GeoAnalysis {
                 System.out.println("Inserted " + pointDocuments.size() + " Point geometries");
             }
 
-            // Create geo2dsphere index on geometry field
-            marburgLocations.createIndex(Indexes.geo2dsphere("geometry"));
-            System.out.println("Created geo2dsphere index on geometry field");
+            // Create geo2dsphere index on geometry field with error handling
+            try {
+                marburgLocations.createIndex(Indexes.geo2dsphere("geometry"));
+                System.out.println("Created geo2dsphere index on geometry field");
+            } catch (com.mongodb.MongoCommandException e) {
+                if (e.getErrorCode() == 14031) {
+                    System.err.println("\nWARNING: Could not create geo2dsphere index due to insufficient disk space");
+                    System.err.println("Available: ~" + (238116864 / 1024 / 1024) + " MB, Required: ~500 MB");
+                    System.err.println("Queries will use manual distance calculation instead.\n");
+                } else {
+                    throw e;
+                }
+            }
 
         } catch (Exception e) {
             System.err.println("Error reading GeoJSON file: " + e.getMessage());
@@ -144,7 +153,7 @@ public class GeoAnalysis {
         }
     }
 
-    // Task 2.1.f: Find 10 closest restaurants using geospatial aggregation
+    // Task 2.1.f: Find 10 closest restaurants (manual distance calculation, no index needed)
     public void findRestaurants() {
         List<Double> fbCoordinates = getFB();
 
@@ -156,47 +165,78 @@ public class GeoAnalysis {
         System.out.println("\n10 Closest Restaurants:");
         System.out.println("=======================");
 
-        // Use $near with $geometry (works without index, but slower)
-        Bson geoFilter = Filters.near(
-                "geometry",
-                new org.bson.Document("type", "Point")
-                        .append("coordinates", fbCoordinates),
-                null,  // maxDistance
-                null   // minDistance
-        );
+        // Filter for restaurants only
+        Bson filter = Filters.eq("properties.amenity", "restaurant");
 
-        Bson amenityFilter = Filters.eq("properties.amenity", "restaurant");
-        Bson combinedFilter = Filters.and(geoFilter, amenityFilter);
+        // Retrieve all restaurants and calculate distances
+        List<RestaurantDistance> restaurants = new ArrayList<>();
 
-        // Execute query
-        int rank = 1;
-        for (Document doc : marburgLocations.find(combinedFilter).limit(10)) {
+        for (Document doc : marburgLocations.find(filter)) {
             Document geometry = doc.get("geometry", Document.class);
-            @SuppressWarnings("unchecked")
-            List<Double> coords = (List<Double>) geometry.get("coordinates");
+            if (geometry != null) {
+                @SuppressWarnings("unchecked")
+                List<Double> coords = (List<Double>) geometry.get("coordinates");
 
-            Document properties = doc.get("properties", Document.class);
-            String name = properties != null ? properties.getString("name") : "Unnamed Restaurant";
+                if (coords != null && coords.size() >= 2) {
+                    Document properties = doc.get("properties", Document.class);
+                    String name = properties != null ? properties.getString("name") : "Unnamed Restaurant";
 
-            if (name == null) {
-                name = "Unnamed Restaurant";
+                    if (name == null) {
+                        name = "Unnamed Restaurant";
+                    }
+
+                    double distance = calculateDistance(fbCoordinates, coords);
+                    restaurants.add(new RestaurantDistance(name, distance));
+                }
             }
-
-            // Calculate distance manually (simple Euclidean approximation)
-            double distance = calculateDistance(fbCoordinates, coords);
-
-            System.out.printf("%d. %s - Distance: %.2f meters%n", rank++, name, distance);
         }
+
+        // Sort by distance and get top 10
+        restaurants.sort((r1, r2) -> Double.compare(r1.distance, r2.distance));
+
+        int count = Math.min(10, restaurants.size());
+        for (int i = 0; i < count; i++) {
+            RestaurantDistance r = restaurants.get(i);
+            System.out.printf("%d. %s - Distance: %.2f meters%n", i + 1, r.name, r.distance);
+        }
+
+        System.out.println("\nNote: Using manual distance calculation (no geospatial index due to disk space limitation)");
+
+        /*
+         * MongoDB Shell (JavaScript) query (requires geo2dsphere index):
+         *
+         * db.marburgLocations.aggregate([
+         *   {
+         *     $geoNear: {
+         *       near: {
+         *         type: "Point",
+         *         coordinates: [8.8106344, 50.8094125] // FB coordinates
+         *       },
+         *       distanceField: "distance",
+         *       query: { "properties.amenity": "restaurant" },
+         *       spherical: true
+         *     }
+         *   },
+         *   { $limit: 10 },
+         *   {
+         *     $project: {
+         *       "properties.name": 1,
+         *       "distance": 1,
+         *       "_id": 0
+         *     }
+         *   }
+         * ])
+         */
     }
 
-    // Helper method to calculate approximate distance
+    // Helper method to calculate distance using Haversine formula
     private double calculateDistance(List<Double> point1, List<Double> point2) {
         double lon1 = point1.get(0);
         double lat1 = point1.get(1);
         double lon2 = point2.get(0);
         double lat2 = point2.get(1);
 
-        // Haversine formula for spherical distance
+        // Haversine formula for great-circle distance
         double R = 6371000; // Earth's radius in meters
         double dLat = Math.toRadians(lat2 - lat1);
         double dLon = Math.toRadians(lon2 - lon1);
@@ -208,6 +248,17 @@ public class GeoAnalysis {
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
         return R * c;
+    }
+
+    // Helper class to store restaurant name and distance
+    private static class RestaurantDistance {
+        String name;
+        double distance;
+
+        RestaurantDistance(String name, double distance) {
+            this.name = name;
+            this.distance = distance;
+        }
     }
 
     public void close() {
